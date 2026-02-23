@@ -16,11 +16,9 @@ package crio
 
 import (
 	"fmt"
-	"os"
 	"path"
 	"regexp"
 	"strings"
-	"sync"
 
 	"github.com/google/cadvisor/container"
 	"github.com/google/cadvisor/container/libcontainer"
@@ -42,25 +40,6 @@ const SystemdNamespace = "system-systemd"
 
 // Regexp that identifies CRI-O cgroups
 var crioCgroupRegexp = regexp.MustCompile(`([a-z0-9]{64})`)
-
-var (
-	isRunningSystemdOnce sync.Once
-	isRunningSystemd     bool
-)
-
-// systemdCheck is the function used to detect if systemd is running.
-// Can be overridden in tests.
-var systemdCheck = detectSystemd
-
-// detectSystemd checks whether the host was booted with systemd as its init
-// system. This checks whether /run/systemd/system/ exists and is a directory.
-func detectSystemd() bool {
-	isRunningSystemdOnce.Do(func() {
-		fi, err := os.Lstat("/run/systemd/system")
-		isRunningSystemd = err == nil && fi.IsDir()
-	})
-	return isRunningSystemd
-}
 
 type storageDriver string
 
@@ -85,6 +64,8 @@ type crioFactory struct {
 	includedMetrics container.MetricSet
 
 	client CrioClient
+
+	cgroupDriver string
 }
 
 func (f *crioFactory) String() string {
@@ -155,7 +136,7 @@ func (f *crioFactory) CanHandleAndAccept(name string) (bool, bool, error) {
 	// 404 errors and can lead to deadlocks during kubelet restart.
 	// See: https://github.com/cri-o/cri-o/issues/8748
 	// See: https://github.com/google/cadvisor/pull/3457
-	if systemdCheck() {
+	if f.cgroupDriver == "systemd" {
 		if !strings.HasSuffix(path.Base(name), CrioNamespaceSuffix) {
 			// This is a sandbox container when using systemd
 			return true, false, nil
@@ -196,6 +177,7 @@ func Register(factory info.MachineInfoFactory, fsInfo fs.FsInfo, includedMetrics
 		storageDriver:      storageDriver(info.StorageDriver),
 		storageDir:         info.StorageRoot,
 		includedMetrics:    includedMetrics,
+		cgroupDriver:       info.CgroupDriver,
 	}
 
 	container.RegisterContainerHandlerFactory(f, []watcher.ContainerWatchSource{watcher.Raw})
